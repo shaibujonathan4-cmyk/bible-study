@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
       { role: "system", content: systemPrompt },
       ...history.map((m: HistoryItem) => ({
         role: m.speaker === "You" ? "user" : "assistant",
-        content: m.speaker === "You" ? m.text : `[As ${m.speaker}]: ${m.text}`,
+        content: m.text,
       })),
     ];
 
