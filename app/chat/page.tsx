@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 type Message = {
   speaker: string;
   text: string;
+  replyTo?: { speaker: string; text: string };
 };
 
 const KNOWN_NAMES = [
@@ -62,6 +63,80 @@ async function saveConversation(room: string, active: string, messages: Message[
   }
 }
 
+function MessageBubble({
+  message,
+  onSwipeReply,
+}: {
+  message: Message;
+  onSwipeReply: (m: Message) => void;
+}) {
+  const isUser = message.speaker === "You";
+  const [dragX, setDragX] = useState(0);
+  const startX = useRef<number | null>(null);
+  const triggered = useRef(false);
+
+  function handleTouchStart(e: React.TouchEvent) {
+    startX.current = e.touches[0].clientX;
+    triggered.current = false;
+  }
+
+  function handleTouchMove(e: React.TouchEvent) {
+    if (startX.current === null) return;
+    const diff = e.touches[0].clientX - startX.current;
+    // Only allow swiping right, capped
+    const clamped = Math.max(0, Math.min(diff, 70));
+    setDragX(clamped);
+    if (clamped > 55 && !triggered.current) {
+      triggered.current = true;
+      if (navigator.vibrate) navigator.vibrate(10);
+    }
+  }
+
+  function handleTouchEnd() {
+    if (dragX > 55) {
+      onSwipeReply(message);
+    }
+    setDragX(0);
+    startX.current = null;
+  }
+
+  return (
+    <div className={`relative flex flex-col ${isUser ? "items-end" : "items-start"}`}>
+      <div
+        className="absolute top-1/2 -translate-y-1/2 text-gold transition-opacity"
+        style={{
+          opacity: dragX / 55,
+          [isUser ? "right" : "left"]: -28,
+        }}
+      >
+        ↩
+      </div>
+      {!isUser && <span className="text-xs text-gold font-medium mb-1">{message.speaker}</span>}
+      <div
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        style={{ transform: `translateX(${dragX}px)`, transition: dragX === 0 ? "transform 0.2s ease" : "none" }}
+        className={`max-w-[75%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed ${
+          isUser ? "bg-crimson text-white rounded-br-sm" : "bg-sky-light text-[#1a1a1a] rounded-bl-sm"
+        }`}
+      >
+        {message.replyTo && (
+          <div
+            className={`mb-2 pl-2 border-l-2 text-sm opacity-80 ${
+              isUser ? "border-white/50" : "border-gold"
+            }`}
+          >
+            <div className="font-medium">{message.replyTo.speaker}</div>
+            <div className="truncate">{message.replyTo.text}</div>
+          </div>
+        )}
+        {message.text}
+      </div>
+    </div>
+  );
+}
+
 function ChatInner() {
   const params = useSearchParams();
   const initial = params.get("with");
@@ -73,6 +148,7 @@ function ChatInner() {
   const [hydrated, setHydrated] = useState(false);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -84,7 +160,6 @@ function ChatInner() {
     }, 100);
   };
 
-  // Load this room's saved conversation on mount (or when the room changes)
   useEffect(() => {
     setHydrated(false);
     loadConversation(room).then(({ active: savedActive, messages: savedMessages }) => {
@@ -100,7 +175,6 @@ function ChatInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room]);
 
-  // Save whenever this room's conversation changes
   useEffect(() => {
     if (!hydrated) return;
     saveConversation(room, active, messages);
@@ -139,11 +213,16 @@ function ChatInner() {
     if (!text || loading) return;
 
     const nextActive = detectName(text, active);
-    const userMsg: Message = { speaker: "You", text };
+    const userMsg: Message = {
+      speaker: "You",
+      text,
+      replyTo: replyTo ? { speaker: replyTo.speaker, text: replyTo.text } : undefined,
+    };
     const updated = [...messages, userMsg];
     setMessages(updated);
     setActive(nextActive);
     setInput("");
+    setReplyTo(null);
     requestAnimationFrame(() => inputRef.current?.focus());
 
     setLoading(true);
@@ -196,21 +275,9 @@ function ChatInner() {
               Say hello to anyone from scripture — try &quot;Hi Elijah&quot; or &quot;Moses, are you there?&quot;
             </p>
           )}
-          {messages.map((m, i) => {
-            const isUser = m.speaker === "You";
-            return (
-              <div key={i} className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
-                {!isUser && <span className="text-xs text-gold font-medium mb-1">{m.speaker}</span>}
-                <div
-                  className={`max-w-[75%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed ${
-                    isUser ? "bg-crimson text-white rounded-br-sm" : "bg-sky-light text-[#1a1a1a] rounded-bl-sm"
-                  }`}
-                >
-                  {m.text}
-                </div>
-              </div>
-            );
-          })}
+          {messages.map((m, i) => (
+            <MessageBubble key={i} message={m} onSwipeReply={setReplyTo} />
+          ))}
           {loading && (
             <div className="flex flex-col items-start">
               <span className="text-xs text-gold font-medium mb-1">{active}</span>
@@ -224,28 +291,44 @@ function ChatInner() {
       </main>
 
       <footer className="shrink-0 border-t border-gold/30 bg-white px-6 py-3 z-30">
-        <div className="max-w-3xl mx-auto flex gap-3 items-center">
-          <input
-            ref={inputRef}
-            value={input}
-            onFocus={scrollToBottom}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                send();
-              }
-            }}
-            placeholder="Say hi to anyone in scripture..."
-            className="flex-1 border border-gold/40 rounded-full px-5 py-3 text-[15px] focus:outline-none focus:border-gold"
-          />
-          <button
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={send}
-            className="bg-crimson text-white px-6 py-3 rounded-full font-medium hover:opacity-90 transition shrink-0"
-          >
-            Send
-          </button>
+        <div className="max-w-3xl mx-auto flex flex-col gap-2">
+          {replyTo && (
+            <div className="flex items-center justify-between bg-sky-light rounded-lg px-3 py-2">
+              <div className="min-w-0">
+                <p className="text-xs text-gold font-medium">Replying to {replyTo.speaker}</p>
+                <p className="text-sm text-[#555] truncate">{replyTo.text}</p>
+              </div>
+              <button
+                onClick={() => setReplyTo(null)}
+                className="text-[#888] hover:text-crimson px-2 shrink-0"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          <div className="flex gap-3 items-center">
+            <input
+              ref={inputRef}
+              value={input}
+              onFocus={scrollToBottom}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              placeholder="Say hi to anyone in scripture..."
+              className="flex-1 border border-gold/40 rounded-full px-5 py-3 text-[15px] focus:outline-none focus:border-gold"
+            />
+            <button
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={send}
+              className="bg-crimson text-white px-6 py-3 rounded-full font-medium hover:opacity-90 transition shrink-0"
+            >
+              Send
+            </button>
+          </div>
         </div>
       </footer>
     </div>
